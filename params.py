@@ -17,7 +17,7 @@ live here rather than in either pipeline.  Nothing downstream hard-codes a
 number that appears in this file.
 
 SOURCES
-  m_a       CRS R48631 (post-OBBBA) and R48153 (pre-TCJA, equity, 8 categories)
+  m_a       CRS R48631 (post-OBBBA) and R48153 (pre-TCJA, equity)
   delta_a   CRS R48277 Table A-2
   s         CRS R48277 Table A-1; see derive_s() below
 """
@@ -50,6 +50,8 @@ BEA_T41 = "BEA_Table_4_1.csv"           # nonres by industry group x legal form
 BEA_T51 = "BEA_Table_5_1.csv"           # residential by owner/legal form
 FRED_RE_TOTAL = "NCBREMV.csv"
 FRED_RE_NONRES = "BOGZ1FL105035033A.csv"
+FRED_STRUCT_NONRES = "RCSNNWMVBSNNCB.csv"
+FRED_STRUCT_RES = "RCVSRNWMVBSNNCB.csv"
 SOI_BALANCE = {                          # (all corporations, S corporations)
     2016: ("16co51ccr.xlsx", "16co61ccr.xlsx"),
     2018: ("18co51ccr.xlsx", "18co61ccr.xlsx"),
@@ -69,7 +71,8 @@ NSF_FILE_STEMS = {2022: ["nsf24335-tab010", "nsf24335"],
 
 def expected_files():
     """Every input filename the code may look for."""
-    names = [BEA_DETAIL, BEA_T41, BEA_T51, FRED_RE_TOTAL, FRED_RE_NONRES]
+    names = [BEA_DETAIL, BEA_T41, BEA_T51, FRED_RE_TOTAL, FRED_RE_NONRES,
+             FRED_STRUCT_NONRES, FRED_STRUCT_RES]
     names += [f for pair in SOI_BALANCE.values() for f in pair]
     names += list(SOI_TABLE13.values())
     return names
@@ -212,10 +215,18 @@ CATS_DETAILED = ["Equipment", "Software", "RD", "Inventories", "Land",
                  "Manufacturing_Struct", "Communications_Struct", "Farm_Struct",
                  "Commercial_HealthCare", "Other_Nonres", "OilGasMining_Struct",
                  "Power_Struct", "Residential_Struct"]
+# Historical comparison. CRS's equity-financed tables report prepackaged and
+# custom software separately but pool ordinary nonresidential structures. Keeping
+# the two software categories separate avoids assigning software the equipment
+# depreciation rate. The resulting historical specification has ten categories.
+CATS_HIST = ["Equipment", "Prepackaged_Software", "Custom_Software", "RD",
+             "Inventories", "Land", "Nonres_Struct", "OilGasMining_Struct",
+             "Power_Struct", "Residential_Struct"]
+
+# Legacy eight-category objects are retained only so older auxiliary scripts do
+# not fail on import. They are not used by reproduce.py or the historical results.
 CAT8 = ["Equipment", "RD", "Inventories", "Land", "Nonres_Struct",
         "OilGasMining_Struct", "Power_Struct", "Residential_Struct"]
-# The historical eight-category schedule has no software line, so software returns
-# to equipment for that comparison.
 DETAILED_TO_COMPARABLE = {
     "Equipment": "Equipment", "Software": "Equipment", "RD": "RD", "Inventories": "Inventories", "Land": "Land",
     "Manufacturing_Struct": "Nonres_Struct", "Communications_Struct": "Nonres_Struct",
@@ -244,7 +255,21 @@ EQUITY_DETAILED = {  # R48631, corporate equity financed, post-OBBBA
     "Commercial_HealthCare": 0.268, "Other_Nonres": 0.272, "OilGasMining_Struct": 0.171,
     "Power_Struct": 0.173, "Residential_Struct": 0.232,
 }
-EQUITY_8 = {  # R48153 / R48631, equity, 8 comparable categories, by regime
+EQUITY_HIST = {  # R48153 Table 4 / R48631 Table 3, corporate equity finance
+    "eq_2017": {
+        "Equipment": 0.198, "Prepackaged_Software": 0.320, "Custom_Software": 0.236,
+        "RD": -0.358, "Inventories": 0.416, "Land": 0.392, "Nonres_Struct": 0.376,
+        "OilGasMining_Struct": 0.240, "Power_Struct": 0.206, "Residential_Struct": 0.335,
+    },
+    "eq_2025_obbba": {
+        "Equipment": 0.093, "Prepackaged_Software": 0.078, "Custom_Software": 0.078,
+        "RD": -0.303, "Inventories": 0.290, "Land": 0.271, "Nonres_Struct": 0.221,
+        "OilGasMining_Struct": 0.171, "Power_Struct": 0.173, "Residential_Struct": 0.232,
+    },
+}
+
+# Legacy eight-category schedule retained for backward compatibility only.
+EQUITY_8 = {
     "eq_2017": {"Equipment": 0.198, "RD": -0.358, "Inventories": 0.416, "Land": 0.392,
                 "Nonres_Struct": 0.376, "OilGasMining_Struct": 0.240,
                 "Power_Struct": 0.206, "Residential_Struct": 0.335},
@@ -277,9 +302,70 @@ DELTA_DETAILED = {
     "Farm_Struct": 0.0239, "Commercial_HealthCare": 0.0247, "Other_Nonres": 0.0272,
     "OilGasMining_Struct": 0.0450, "Power_Struct": 0.0211, "Residential_Struct": 0.0140,
 }
+DELTA_HIST = {
+    "Equipment": 0.126, "Prepackaged_Software": 0.7083, "Custom_Software": 0.3813,
+    "RD": 0.1745, "Inventories": 0.0, "Land": 0.0, "Nonres_Struct": 0.027,
+    "OilGasMining_Struct": 0.0450, "Power_Struct": 0.0211, "Residential_Struct": 0.0140,
+}
+
+# Legacy eight-category depreciation schedule retained for older auxiliaries.
 DELTA8 = {"Equipment": 0.130, "RD": 0.1745, "Inventories": 0.0, "Land": 0.0,
           "Nonres_Struct": 0.027, "OilGasMining_Struct": 0.0450,
           "Power_Struct": 0.0211, "Residential_Struct": 0.0140}
+
+# Benchmark elasticities used for the paper's excess-burden calculations.
+EPSILON_BENCHMARK = 0.6
+ETA_BENCHMARK = 1.0
+SIGMA_BENCHMARK = 1.0
+
+# CRS Table A-2 range across detailed equipment types. Used only for the
+# aggregation diagnostic in test_all.py and reproduce.py.
+EQUIPMENT_DELTA_MIN = 0.0500
+EQUIPMENT_DELTA_MAX = 0.3333
+
+# CRS R48277 Table A-2 component rates, used ONLY for the appendix diagnostics.
+# The headline Equipment depreciation input remains DELTA_DETAILED['Equipment'].
+# Each tuple supplies the source asset class, rate, and corresponding BEA codes.
+EQUIPMENT_DEPRECIATION_CROSSWALK = [
+    ("Office/Computing Equipment", 0.2729,
+     ("EP1A", "EP1B", "EP1C", "EP1D", "EP1E", "EP1F", "EP1G", "EP1H", "EP12", "EP31")),
+    ("Communications Equipment", 0.1100, ("EP20",)),
+    ("Instruments", 0.1350, ("EP34", "EP35", "EP36")),
+    ("Fabricated Metal Products", 0.0917, ("EI12",)),
+    ("Engines and Turbines", 0.0516, ("EI21", "EI22")),
+    ("Metal Working Machinery", 0.1225, ("EI30",)),
+    ("Special Industrial Equipment", 0.1031, ("EI40",)),
+    ("General Industrial Equipment", 0.1072, ("EI50",)),
+    ("Electric Transmission Equipment", 0.0500, ("EI60",)),
+    ("Trucks, Buses, and Trailers", 0.1725, ("ET11", "ET12")),
+    ("Autos", 0.3333, ("ET20",)),
+    ("Aircraft", 0.0660, ("ET30",)),
+    ("Ships and Boats", 0.0611, ("ET40",)),
+    ("Railroad Equipment", 0.0589, ("ET50",)),
+    ("Furniture and Fixtures", 0.1375, ("EO11", "EO12")),
+    ("Agricultural Equipment", 0.1179, ("EO21", "EO30")),
+    ("Construction Machinery", 0.1550, ("EO22", "EO40")),
+    ("Mining and Oilfield Machinery", 0.1500, ("EO50",)),
+    ("Service Industry Machinery", 0.1650, ("EO60",)),
+    ("Other Electrical Equipment", 0.1834, ("EO71", "EO72")),
+    ("Other Nonresidential Equipment", 0.1473, ("EI11", "EO80")),
+]
+EQUIPMENT_COMPONENT_DELTA = {code: rate
+                             for _name, rate, codes in EQUIPMENT_DEPRECIATION_CROSSWALK
+                             for code in codes}
+# Table A-2 has no separate nuclear-fuel or household-appliance line. These
+# explicit proxies affect diagnostic calculations, not the headline parameters.
+EQUIPMENT_COMPONENT_PROXIES = {
+    "EI11": "Nuclear fuel assigned to Other Nonresidential Equipment",
+    "EO71": "Household appliances assigned to Other Electrical Equipment",
+}
+
+ELASTICITY_CASES = {
+    "Benchmark": (EPSILON_BENCHMARK, ETA_BENCHMARK, SIGMA_BENCHMARK),
+    "Low elasticities": (0.3, 0.5, 0.5),
+    "High elasticities": (0.9, 2.0, 2.0),
+    "High asset substitution": (0.6, 1.0, 3.0),
+}
 
 INFLATION = 0.020
 NOMINAL_INTEREST = 0.0682
@@ -379,21 +465,54 @@ NSF_CODE_TO_SECTOR = {"31-33": "31-33", "21": "21", "22": "22", "42": "42",
 # ==========================================================================
 # 7. land valuation
 # ==========================================================================
-# SOI book value supplies the industry DISTRIBUTION; the TOTAL is scaled to a
-# current-cost control, because book land sits far below market and combining it
-# with current-cost structures would understate land's weight mechanically.  One
-# factor, estimated in the baseline year, is applied to every year, so the series
-# does not move with the Fed residual, which is itself unstable year to year.
-# The two residual controls are external current-value estimates.  "SOI_book"
-# means "no rescaling", so its target is whatever the SOI book total turns out to
-# be; it is resolved at run time by stocks.land_factor(), which divides the chosen
-# control by the constructed 2022 book total.  The denominator must NOT be
-# hard-coded: it moves whenever the construction changes (the suppressed-cell
-# estimator alone moved it from 786 to 721), and a stale denominator silently
-# rescales land to the wrong control.
-LAND_BASES = {"SOI_book": None, "residual_nonres_RE": 1654.0, "residual_total_RE": 2572.0}
+# SOI supplies industry book-land holdings. land_controls.py derives the residual
+# from four Financial Accounts series and scales those holdings by an explicitly
+# approximate nonfinancial-corporate market/book multiple. No external numerical
+# control is used by the current calculations. One 2022 multiple is applied to
+# both stock years, preserving the historical comparison's fixed valuation rule.
+LAND_BASES = {"SOI_book": None, "residual_nonres_RE": "nonres", "residual_total_RE": "total"}
+LAND_STRUCTURES = "z1"
+LAND_SCALING = "matched"
+LAND_NONFIN_EXCLUDE = ("52",)
+LAND_SOURCE_CAPTURE_DATE = "2026-10-12"  # four refreshed CSVs uploaded together
+# SOI excluding sector 52 is an approximate crosswalk, not an exact Z.1 sector.
+# The nonfinancial-corporate multiple is applied to all C-corporation industries,
+# including finance: a common market/book uplift across legal forms and sectors.
+LAND_COVERAGE_NOTE = (
+    "Approximate nonfinancial SOI population excludes sector 52; financial holding "
+    "companies and consolidation differences are not separately reconciled. The "
+    "same valuation multiple is assumed for all C-corporation industries.")
+# Historical inputs for comparison only; never used to construct stock weights.
+LAND_LEGACY_CONTROLS = {"residual_nonres_RE": 1654.0, "residual_total_RE": 2572.0}
 LAND_PRIMARY = "residual_total_RE"
 LAND_REFERENCE_YEAR = 2022      # the factor is estimated here and applied to all years
+
+
+def bea_asset_to_hist_cat(code):
+    """BEA detailed asset code -> ten-category historical specification.
+
+    Purchased software remains split into prepackaged and custom categories, as
+    in the CRS equity-finance tables. Ordinary nonresidential structures are
+    pooled because CRS publishes only their aggregate rate historically.
+    """
+    c = code.upper()
+    if c == "ENS1":
+        return "Prepackaged_Software"
+    if c == "ENS2":
+        return "Custom_Software"
+    if c == "EQ00":
+        return "Equipment"
+    # EQ00 already includes every detailed equipment component, including
+    # EP31/EP34/EP35/EP36. Do not add those components again as research.
+    if c[:2] in ("EN", "RD"):
+        return "RD"
+    if c in ("SM01", "SM02"):
+        return "OilGasMining_Struct"
+    if c in ("SU30", "SU40", "SU50", "SU60"):
+        return "Power_Struct"
+    if c.startswith("S"):
+        return "Nonres_Struct"
+    return None
 
 
 def bea_asset_to_cat(code):
@@ -407,7 +526,9 @@ def bea_asset_to_cat(code):
         return "Software"
     if c == "EQ00":
         return "Equipment"
-    if c[:2] in ("EN", "RD") or c[:3] == "EP3":
+    # EQ00 already includes every detailed equipment component, including
+    # EP31/EP34/EP35/EP36. Do not add those components again as research.
+    if c[:2] in ("EN", "RD"):
         return "RD"                  # includes own-account software, per the source
     if c == "SI00":
         return "Manufacturing_Struct"

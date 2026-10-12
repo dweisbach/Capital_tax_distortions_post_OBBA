@@ -12,13 +12,14 @@ Three asset blocks, measured differently because they are published differently:
                                shares, then the SOI C-corp share of depreciable
                                assets by industry.
   land, inventories            SOI balance sheets (Table 5.1 less Table 6.1).
-                               Book value; land is rescaled to a current-cost
-                               control -- see LAND_FACTOR in params.
+                               Book value; land is rescaled by the residual
+                               market/book multiple in land_controls.py.
   residential structures       BEA Table 5.1 corporate row, assigned to real
                                estate.  Small, and absent from the
                                nonresidential detail file.
 
-Returns both the 12-category matrix and its 8-category collapse.
+Returns the 13-category main matrix; build_K_historical() constructs the
+ten-category historical matrix used for the pre-TCJA/post-OBBBA comparison.
 """
 import re
 from functools import lru_cache
@@ -28,14 +29,14 @@ import pandas as pd
 
 from params import (check_schema, DATA_DIR, BEA_DETAIL, BEA_T41, BEA_T51, SECTOR_CODES,
                     SECTOR_NAMES, NAMES, BEA_NAICS_ALIAS, bea_asset_to_cat,
-                    CATS_DETAILED, CAT8, DETAILED_TO_COMPARABLE, LAND_BASES,
-                    LAND_PRIMARY, LAND_REFERENCE_YEAR)
+                    CATS_DETAILED, CAT8, DETAILED_TO_COMPARABLE, CATS_HIST,
+                    bea_asset_to_hist_cat, LAND_BASES, LAND_PRIMARY, LAND_REFERENCE_YEAR)
 
 check_schema(2, __name__)
 import soi
 
 _ASSET_CLASS = {
-    "Equipment": "Equipment", "RD": "IPP", "Manufacturing_Struct": "Structures",
+    "Equipment": "Equipment", "Software": "IPP", "RD": "IPP", "Manufacturing_Struct": "Structures",
     "Communications_Struct": "Structures", "Farm_Struct": "Structures",
     "Commercial_HealthCare": "Structures", "Other_Nonres": "Structures",
     "OilGasMining_Struct": "Structures", "Power_Struct": "Structures",
@@ -80,13 +81,12 @@ def _bea_industry_map(wb):
 
 
 @lru_cache(maxsize=None)
-def _bea_series():
-    """Parse the BEA Datasets sheet ONCE and return (years, series).
+def _bea_raw_series():
+    """Read source series once, retaining components for aggregation checks.
 
-    series is a tuple of (sector_name, category, values) with values aligned to
-    years.  The sheet holds every industry x asset series for every vintage, and
-    parsing it takes several seconds, so a run that needs two stock years should
-    read it once rather than once per year.
+    Return (years, ((industry, asset_code, values), ...)). Main stock builders
+    still filter these through the model concordance; retaining a raw component
+    does not add it to the main matrix.
     """
     wb = openpyxl.load_workbook(DATA_DIR / BEA_DETAIL, read_only=True, data_only=True)
     ind2sec = _bea_industry_map(wb)
@@ -107,10 +107,36 @@ def _bea_series():
         sector = next((ind2sec[c] for c in codes if ind.startswith(c)), None)
         if sector not in SECTOR_NAMES or asset in ("ST00", "IP00", "IPP0"):
             continue                              # roll-up totals
-        cat = bea_asset_to_cat(asset)
-        if cat:
-            out.append((SECTOR_NAMES[sector], cat, row))
+        out.append((SECTOR_NAMES[sector], asset, row))
+    wb.close()
     return years, tuple(out)
+
+
+@lru_cache(maxsize=None)
+def _bea_series():
+    """Return only model-mapped series, without equipment duplication."""
+    years, raw = _bea_raw_series()
+    return years, tuple((name, asset, cat, row)
+                        for name, asset, row in raw
+                        if (cat := bea_asset_to_cat(asset)) is not None)
+
+
+def equipment_components(year):
+    """All-legal-form detailed physical equipment, in billions of dollars.
+
+    EQ00 is excluded: it is the total that these components reconcile to.
+    Software EN codes are excluded. The components are used for depreciation
+    diagnostics only and are never added again to the headline stock matrix.
+    """
+    years, raw = _bea_raw_series()
+    col = years.index(year)
+    codes = sorted({asset for _, asset, _ in raw
+                    if asset.startswith(("EP", "EI", "ET", "EO"))})
+    result = pd.DataFrame(0.0, index=NAMES, columns=codes)
+    for name, asset, row in raw:
+        if asset in result.columns and row[col] is not None:
+            result.loc[name, asset] += float(row[col]) / 1000.0
+    return result
 
 
 def _produced_stocks(year):
@@ -122,10 +148,34 @@ def _produced_stocks(year):
                        f"{max(y for y in years if y)}")
     col = years.index(year)
     out = pd.DataFrame(0.0, index=NAMES, columns=CATS_DETAILED)
-    for name, cat, row in series:
+    for name, _asset, cat, row in series:
         value = row[col]
         if value is not None:
             out.loc[name, cat] += float(value) / 1e3      # $millions -> $billions
+    return out
+
+
+def _produced_stocks_historical(year):
+    """All-legal-form produced stocks for the ten-category historical design.
+
+    The only granularity change relative to the main matrix is that prepackaged
+    and custom software are kept separate while ordinary nonresidential
+    structures are pooled.
+    """
+    years, series = _bea_series()
+    if year not in years:
+        raise KeyError(f"BEA detail file has no column for {year}; "
+                       f"it covers {min(y for y in years if y)}-"
+                       f"{max(y for y in years if y)}")
+    col = years.index(year)
+    out = pd.DataFrame(0.0, index=NAMES, columns=CATS_HIST)
+    for name, asset, _main_cat, row in series:
+        value = row[col]
+        if value is None:
+            continue
+        cat = bea_asset_to_hist_cat(asset)
+        if cat:
+            out.loc[name, cat] += float(value) / 1e3
     return out
 
 
@@ -158,20 +208,15 @@ def _corp_residential(year):
 
 @lru_cache(maxsize=None)
 def land_factor(basis=LAND_PRIMARY):
-    """Scale from SOI book land to the chosen current-value control.
+    """Reference-year market/book multiple derived by land_controls.py.
 
-    The denominator is the constructed book total in the reference year, read
-    fresh, so the factor stays consistent with however land is currently
-    measured.  One factor is applied to every year, so the land series does not
-    move with the control, which is a residual and unstable year to year.
+    The matched option measures the multiple on an approximate nonfinancial
+    all-corporation population, then applies it to C-corporation book land.
+    The reference-year C-corporation total need not equal the source residual.
+    The same multiple is applied in both stock years.
     """
-    target = LAND_BASES[basis]
-    if target is None:
-        return 1.0                                    # SOI book value, unscaled
-    book = soi.levels(LAND_REFERENCE_YEAR, items=("land",))["land"].sum()
-    if book <= 0:
-        raise ValueError("constructed SOI book land total is not positive")
-    return target / book
+    import land_controls
+    return land_controls.land_factor(basis)
 
 
 def _group(sector):
@@ -182,18 +227,21 @@ def _group(sector):
 def clear_cache():
     """Drop cached file parses (call after editing an input file in a session)."""
     _bea_series.cache_clear()
+    _bea_raw_series.cache_clear()
     land_factor.cache_clear()
     _corporate_shares.cache_clear()
     _corp_residential.cache_clear()
     soi.clear_cache()
+    import land_controls
+    land_controls.clear_cache()
 
 
 def build_K(year=2022, t41_year=None, land_basis=LAND_PRIMARY):
-    """K_ia on a C-corporation basis ($ billions).  Returns (K12, K8).
+    """K_ia on a C-corporation basis ($ billions). Returns (K13, legacy K8).
 
     land_basis selects the current-value control for land (see params.LAND_BASES);
     the scale factor is derived from the constructed book total in the reference
-    year, so the reference-year land stock equals the control exactly.
+    year. The matched C-corporation total differs from the source-sector residual.
     """
     t41_year = t41_year or max(2017, year)           # Table 4.1 begins in 2017
     K = _produced_stocks(year)
@@ -221,3 +269,44 @@ def build_K(year=2022, t41_year=None, land_basis=LAND_PRIMARY):
     for c in CATS_DETAILED:
         K8[DETAILED_TO_COMPARABLE[c]] += K[c]
     return K[CATS_DETAILED], K8
+
+
+def build_K_historical(year=2022, t41_year=None, land_basis=LAND_PRIMARY):
+    """Ten-category C-corporation stock matrix for the historical comparison.
+
+    Purchased software is split into prepackaged and custom software. Ordinary
+    nonresidential structures are pooled because that is the granularity of the
+    comparable CRS equity-finance schedules. Land and inventories use the same
+    construction and land basis as build_K().
+    """
+    t41_year = t41_year or max(2017, year)
+    K = _produced_stocks_historical(year)
+
+    shares = _corporate_shares(t41_year)
+    asset_class = {
+        "Equipment": "Equipment",
+        "Prepackaged_Software": "IPP",
+        "Custom_Software": "IPP",
+        "RD": "IPP",
+        "Nonres_Struct": "Structures",
+        "OilGasMining_Struct": "Structures",
+        "Power_Struct": "Structures",
+        "Residential_Struct": "Structures",
+    }
+    for sector in SECTOR_CODES:
+        name = SECTOR_NAMES[sector]
+        for cat, cls in asset_class.items():
+            K.loc[name, cat] *= shares[_group(sector)][cls]
+
+    cc_share = soi.ccorp_share_of_depreciable(year)
+    produced = [c for c in CATS_HIST if c not in ("Land", "Inventories")]
+    for name in NAMES:
+        K.loc[name, produced] *= cc_share[name]
+
+    lv = soi.levels(year, items=("land", "inventories"))
+    K["Land"] = lv["land"] * land_factor(land_basis)
+    K["Inventories"] = lv["inventories"]
+
+    re_name = SECTOR_NAMES["53"]
+    K.loc[re_name, "Residential_Struct"] += _corp_residential(year) * cc_share[re_name]
+    return K[CATS_HIST]

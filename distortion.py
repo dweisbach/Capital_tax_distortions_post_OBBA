@@ -26,11 +26,21 @@ check_schema(2, __name__)
 def capital_service_stats(K, z, delta, s):
     """K: DataFrame (industry x asset); z, delta: dicts keyed by asset; s: float.
 
-    Returns a dict of scalars and Series, all on capital-service weights.
+    z and delta may also be DataFrames indexed like K for the appendix's
+    industry-specific depreciation diagnostic. Returns moments, weights, and
+    benchmark service values B_ia, B_i and B_total (in K's dollar units).
     """
     cats = list(K.columns)
-    zv = np.array([z[c] for c in cats], dtype=float)
-    dv = np.array([delta[c] for c in cats], dtype=float)
+
+    def aligned(value):
+        if isinstance(value, pd.DataFrame):
+            result = value.reindex(index=K.index, columns=cats).to_numpy(dtype=float)
+            if not np.isfinite(result).all():
+                raise ValueError("missing or nonfinite industry-by-asset parameters")
+            return result
+        return np.broadcast_to(np.array([value[c] for c in cats], dtype=float), K.shape)
+
+    zv, dv = aligned(z), aligned(delta)
     B = K.to_numpy(dtype=float) * (s + dv)
     Bi = B.sum(1)
     if (Bi <= 0).any():
@@ -38,9 +48,9 @@ def capital_service_stats(K, z, delta, s):
         raise ValueError(f"non-positive capital service for: {bad}")
     phi = Bi / Bi.sum()
     alpha = B / Bi[:, None]
-    Zi = alpha @ zv
+    Zi = np.sum(alpha * zv, axis=1)
     zbar = float(phi @ Zi)
-    within_var = np.array([np.sum(alpha[i] * (zv - Zi[i]) ** 2) for i in range(len(phi))])
+    within_var = np.sum(alpha * (zv - Zi[:, None]) ** 2, axis=1)
     V_B = float(phi @ (Zi - zbar) ** 2)
     V_W = float(phi @ within_var)
     idx = K.index
@@ -55,6 +65,9 @@ def capital_service_stats(K, z, delta, s):
         "within_sd": pd.Series(np.sqrt(within_var), index=idx),
         "alpha": pd.DataFrame(alpha, index=idx, columns=cats),
         "asset_shares": pd.Series(B.sum(0) / B.sum(), index=cats),
+        "B_ia": pd.DataFrame(B, index=idx, columns=cats),
+        "B_i": pd.Series(Bi, index=idx),
+        "B_total": float(B.sum()),
     }
 
 

@@ -33,8 +33,9 @@ import numpy as np
 import pandas as pd
 
 from params import (check_schema, S_EQUITY, S_MIXED, R_EQUITY, R_MIXED, INFLATION, INV_HOLDING_PERIOD,
-                    INV_FIFO_SHARE, DELTA_DETAILED, DELTA8, MIXED_DETAILED, EQUITY_DETAILED, EQUITY_8,
-                    CORP_RATE, CATS_DETAILED, CAT8)
+                    INV_FIFO_SHARE, DELTA_DETAILED, DELTA_HIST, DELTA8, MIXED_DETAILED,
+                    EQUITY_DETAILED, EQUITY_HIST, EQUITY_8, CORP_RATE, CATS_DETAILED,
+                    CATS_HIST, CAT8)
 
 check_schema(2, __name__)
 
@@ -91,7 +92,7 @@ def exclude_section41(schedule, s, r):
 # convenience builders for the schedules the paper uses -----------------------
 
 def mixed_obbba_12(exclude_s41=False):
-    """Part 1 baseline: post-OBBBA mixed finance, 12 detailed categories."""
+    """Part 1 baseline: post-OBBBA mixed finance, 13 detailed categories."""
     sch = MIXED_DETAILED
     if exclude_s41:
         sch = exclude_section41(sch, S_MIXED, R_MIXED)
@@ -99,11 +100,19 @@ def mixed_obbba_12(exclude_s41=False):
 
 
 def equity_obbba_12(exclude_s41=False):
-    """Post-OBBBA equity, 12 detailed categories."""
+    """Post-OBBBA equity, 13 detailed categories."""
     sch = EQUITY_DETAILED
     if exclude_s41:
         sch = exclude_section41(sch, S_EQUITY, R_EQUITY)
     return wedge_table(sch, DELTA_DETAILED, S_EQUITY, cats=CATS_DETAILED)
+
+
+def equity_historical(law, exclude_s41=False):
+    """Ten-category equity schedule used for the historical comparison."""
+    sch = EQUITY_HIST[law]
+    if exclude_s41:
+        sch = exclude_section41(sch, S_EQUITY, R_EQUITY)
+    return wedge_table(sch, DELTA_HIST, S_EQUITY, cats=CATS_HIST)
 
 
 def equity_8(law, exclude_s41=False):
@@ -116,5 +125,5 @@ def equity_8(law, exclude_s41=False):
 
 if __name__ == "__main__":
     pd.set_option("display.float_format", lambda x: f"{x:8.4f}")
-    print("Post-OBBBA mixed, 12 categories (Section 1 table):")
+    print("Post-OBBBA mixed, 13 categories (Section 1 table):")
     print(mixed_obbba_12().sort_values("z"))
